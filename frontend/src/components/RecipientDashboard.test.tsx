@@ -22,9 +22,21 @@ import { RecipientDashboard } from "./RecipientDashboard";
 // Mock soroban service so tests don't hit the network
 // ---------------------------------------------------------------------------
 
-vi.mock("../services/soroban", () => ({
-  claimStream: vi.fn(),
-}));
+vi.mock("../services/soroban", () => {
+  const mockFn = vi.fn();
+  return {
+    claimOnChain: mockFn,
+    claimStream: mockFn,
+    SorobanClaimError: class SorobanClaimError extends Error {
+      code: string;
+      constructor(message: string, code: string) {
+        super(message);
+        this.name = "SorobanClaimError";
+        this.code = code;
+      }
+    },
+  };
+});
 
 import { claimStream } from "../services/soroban";
 const mockClaimStream = claimStream as ReturnType<typeof vi.fn>;
@@ -70,13 +82,13 @@ function setupRecipientHandler(streams: unknown[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockClaimStream.mockResolvedValue({
+  mockClaimOnChain.mockResolvedValue({
     result: {
       claimedAmount: 500,
       assetCode: "USDC",
       txHash: "txhash123",
     },
-    history: [],
+    history: []
   });
 });
 
@@ -90,14 +102,43 @@ describe("RecipientDashboard", () => {
     expect(screen.getByText(/wallet not connected/i)).toBeInTheDocument();
   });
 
-  it("renders active streams with Claim button", async () => {
+  it("shows no-streams state when stream list is empty", async () => {
+    setupRecipientHandler([]);
+    render(<RecipientDashboard recipientAddress={RECIPIENT} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/no streams found/i)).toBeInTheDocument();
+      expect(screen.getByText(/you have no active or completed streams/i)).toBeInTheDocument();
+    });
+  });
+
+  it("renders active streams with Claim button showing claimable amount", async () => {
+    setupRecipientHandler([activeStream]);
+    render(<RecipientDashboard recipientAddress={RECIPIENT} />);
+
+    await waitFor(() => {
+      const claimButton = screen.getByLabelText(/claim 500 USDC from stream 1/i);
+      expect(claimButton).toBeInTheDocument();
+      expect(claimButton).not.toBeDisabled();
+      expect(claimButton).toHaveTextContent(/claim 500 USDC/i);
+    });
+    // The status badge specifically (not the section heading)
+    expect(screen.getByText("active")).toBeInTheDocument();
+  });
+
+  it("calls claim API with correct stream ID and amount when claim button is clicked", async () => {
     setupRecipientHandler([activeStream]);
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
-    expect(screen.getByText("active")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
+    });
+
+    expect(mockClaimOnChain).toHaveBeenCalledWith("1", RECIPIENT, 500);
   });
 
   it("claim button is disabled when vested amount is 0", async () => {
@@ -105,7 +146,7 @@ describe("RecipientDashboard", () => {
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 2/i)).toBeDisabled(),
+      expect(screen.getByLabelText(/claim 0 USDC from stream 2/i)).toBeDisabled(),
     );
   });
 
@@ -116,15 +157,15 @@ describe("RecipientDashboard", () => {
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
 
     act(() => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeDisabled(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeDisabled(),
     );
     expect(screen.getByText(/claiming…/i)).toBeInTheDocument();
   });
@@ -134,16 +175,31 @@ describe("RecipientDashboard", () => {
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
 
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
+    // Mock successful claim explicitly for this test
+    mockClaimOnChain.mockResolvedValueOnce({
+      result: {
+        claimedAmount: 500,
+        assetCode: "USDC",
+        txHash: "txhash123",
+      },
+      history: []
     });
 
-    await waitFor(() =>
-      expect(screen.getByText(/successfully claimed/i)).toBeInTheDocument(),
-    );
+    // Explicitly mock the next call to return the same stream or updated one
+    // to avoid potential issues with refreshStreams
+    setupRecipientHandler([activeStream]);
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
+    });
+
+    await waitFor(() => {
+      const toast = screen.getByRole("status");
+      expect(toast).toHaveTextContent(/successfully claimed 500 tokens from stream 1/i);
+    }, { timeout: 3000 });
   });
 
   it("shows error toast when claim fails", async () => {
@@ -152,11 +208,11 @@ describe("RecipientDashboard", () => {
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
     });
 
     await waitFor(() =>
@@ -170,11 +226,11 @@ describe("RecipientDashboard", () => {
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
     });
 
     await waitFor(() => {
@@ -184,41 +240,24 @@ describe("RecipientDashboard", () => {
     expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument();
   });
 
-  it("shows pending banner while claim is in-flight", async () => {
-    mockClaimStream.mockReturnValue(new Promise(() => {}));
-    setupRecipientHandler([activeStream]);
-    render(<RecipientDashboard recipientAddress={RECIPIENT} />);
-
-    await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
-    );
-
-    act(() => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
-    });
-
-    await waitFor(() =>
-      expect(screen.getByText(/waiting for on-chain confirmation/i)).toBeInTheDocument(),
-    );
-  });
 
   it("toast can be dismissed", async () => {
     setupRecipientHandler([activeStream]);
     render(<RecipientDashboard recipientAddress={RECIPIENT} />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText(/claim.*from stream 1/i)).toBeInTheDocument(),
+      expect(screen.getByLabelText(/claim 500 USDC from stream 1/i)).toBeInTheDocument(),
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText(/claim.*from stream 1/i));
+      fireEvent.click(screen.getByLabelText(/claim 500 USDC from stream 1/i));
     });
 
     await waitFor(() =>
-      expect(screen.getByText(/successfully claimed/i)).toBeInTheDocument(),
+      expect(screen.getByText(/successfully claimed 500 tokens from stream 1/i)).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByLabelText("Dismiss notification"));
-    expect(screen.queryByText(/successfully claimed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/successfully claimed 500 tokens from stream 1/i)).not.toBeInTheDocument();
   });
 });

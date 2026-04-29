@@ -391,6 +391,81 @@ export const swaggerDocument = {
         },
       },
     },
+    "/api/stats": {
+      get: {
+        summary: "Get aggregate stream statistics",
+        description:
+          "Returns aggregate statistics across all streams. " +
+          "Result is cached for 30 seconds. Useful for admin dashboards and monitoring.",
+        responses: {
+          "200": {
+            description: "Aggregate stream statistics.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        total_streams: {
+                          type: "integer",
+                          description: "Total number of streams.",
+                          example: 42,
+                        },
+                        active_streams: {
+                          type: "integer",
+                          description: "Streams currently streaming (started, not yet ended or canceled).",
+                          example: 10,
+                        },
+                        completed_streams: {
+                          type: "integer",
+                          description: "Streams that have fully completed.",
+                          example: 25,
+                        },
+                        canceled_streams: {
+                          type: "integer",
+                          description: "Streams that were canceled.",
+                          example: 7,
+                        },
+                        total_vested: {
+                          type: "number",
+                          description: "Total tokens vested across all active and completed streams.",
+                          example: 98432.5,
+                        },
+                        avg_duration_seconds: {
+                          type: "integer",
+                          description: "Average stream duration in seconds.",
+                          example: 3600,
+                        },
+                        unique_senders: {
+                          type: "integer",
+                          description: "Number of distinct sender accounts.",
+                          example: 18,
+                        },
+                        unique_recipients: {
+                          type: "integer",
+                          description: "Number of distinct recipient accounts.",
+                          example: 31,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "500": {
+            description: "Failed to compute stats.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Error" },
+              },
+            },
+          },
+        },
+      },
+    },
     "/api/streams": {
       get: {
         summary: "List all streams",
