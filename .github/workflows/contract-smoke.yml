@@ -95,3 +95,10 @@ jobs:
         with:
           name: contract-id
           path: contracts/contract_id.txt
+
+      - name: Run benchmarks & Check for Regressions
+        run: |
+          cd contracts
+          make bench
+          cd ..
+          ./scripts/check_benchmarks.sh
