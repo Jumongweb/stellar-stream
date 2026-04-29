@@ -1,0 +1,393 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { useClaimStream } from "./useClaimStream";
+import { claimStream, SorobanClaimError, ClaimResult } from "../services/soroban";
+import type { StreamEvent } from "../services/api";
+
+// Mock the soroban module
+vi.mock("../services/soroban", () => ({
+  claimStream: vi.fn(),
+  SorobanClaimError: class SorobanClaimError extends Error {
+    code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.name = "SorobanClaimError";
+      this.code = code;
+    }
+  },
+}));
+
+const mockClaimStream = vi.mocked(claimStream);
+
+describe("useClaimStream", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Helper to create mock claim result
+  const createMockClaimResult = (amount: number = 100): ClaimResult => ({
+    claimedAmount: amount,
+    assetCode: "USDC",
+    txHash: "0x1234567890abcdef",
+  });
+
+  // Helper to create mock history
+  const createMockHistory = (): StreamEvent[] => [
+    {
+      id: 1,
+      streamId: "123",
+      eventType: "claimed",
+      timestamp: Date.now(),
+      actor: "GTEST123456789",
+      amount: 100,
+    },
+  ];
+
+  it("sets loading state correctly during successful claim", async () => {
+    const mockResult = createMockClaimResult();
+    const mockHistory = createMockHistory();
+    
+    mockClaimStream.mockResolvedValue({
+      result: mockResult,
+      history: mockHistory,
+    });
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    // Initial state
+    expect(result.current.claimState.status).toBe("idle");
+    expect(result.current.isPending).toBe(false);
+
+    // Start claim
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    // Loading state should be true immediately
+    expect(result.current.claimState.status).toBe("pending");
+    expect(result.current.isPending).toBe(true);
+    expect(result.current.claimState.streamId).toBe("123");
+    expect(result.current.claimState.error).toBe(null);
+
+    // Wait for completion
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("confirmed");
+      expect(result.current.isPending).toBe(false);
+    });
+
+    // Verify success callback was called
+    expect(onSuccess).toHaveBeenCalledWith("123", mockResult, mockHistory);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("transitions loading state from false → true → false", async () => {
+    const mockResult = createMockClaimResult();
+    const mockHistory = createMockHistory();
+    
+    mockClaimStream.mockResolvedValue({
+      result: mockResult,
+      history: mockHistory,
+    });
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    // State 1: false (idle)
+    expect(result.current.isPending).toBe(false);
+    expect(result.current.claimState.status).toBe("idle");
+
+    // Start claim - State 2: true (pending)
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    expect(result.current.isPending).toBe(true);
+    expect(result.current.claimState.status).toBe("pending");
+
+    // Wait for completion - State 3: false (confirmed)
+    await waitFor(() => {
+      expect(result.current.isPending).toBe(false);
+      expect(result.current.claimState.status).toBe("confirmed");
+    });
+  });
+
+  it("exposes API error via error field", async () => {
+    const apiError = new SorobanClaimError("Insufficient balance", "INSUFFICIENT_BALANCE");
+    mockClaimStream.mockRejectedValue(apiError);
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    // Wait for error
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("failed");
+      expect(result.current.isPending).toBe(false);
+      expect(result.current.claimState.error).toBe("Insufficient balance");
+      expect(result.current.claimState.streamId).toBe("123");
+    });
+
+    // Verify error callback was called
+    expect(onFailure).toHaveBeenCalledWith("123", "Insufficient balance");
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("handles generic error and converts to message", async () => {
+    const genericError = new Error("Network error");
+    mockClaimStream.mockRejectedValue(genericError);
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("failed");
+      expect(result.current.claimState.error).toBe("Network error");
+    });
+
+    expect(onFailure).toHaveBeenCalledWith("123", "Network error");
+  });
+
+  it("handles non-Error objects gracefully", async () => {
+    mockClaimStream.mockRejectedValue("String error");
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("failed");
+      expect(result.current.claimState.error).toBe("Claim failed. Please try again.");
+    });
+
+    expect(onFailure).toHaveBeenCalledWith("123", "Claim failed. Please try again.");
+  });
+
+  it("prevents API call when amount is 0", async () => {
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    // Try to claim with amount 0
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 0,
+    });
+
+    // Should not call API and remain in idle state
+    expect(mockClaimStream).not.toHaveBeenCalled();
+    expect(result.current.claimState.status).toBe("idle");
+    expect(result.current.isPending).toBe(false);
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("prevents concurrent claims", async () => {
+    const mockResult = createMockClaimResult();
+    const mockHistory = createMockHistory();
+    
+    mockClaimStream.mockImplementation(() => 
+      new Promise(resolve => 
+        setTimeout(() => resolve({ result: mockResult, history: mockHistory }), 100)
+      )
+    );
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    // Start first claim
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    expect(result.current.isPending).toBe(true);
+
+    // Try second claim while first is pending
+    result.current.claim({
+      streamId: "456",
+      recipientAddress: "GTEST123456789",
+      amount: 200,
+    });
+
+    // Should only have one API call
+    expect(mockClaimStream).toHaveBeenCalledTimes(1);
+    expect(mockClaimStream).toHaveBeenCalledWith("123", "GTEST123456789", 100);
+
+    // Complete first claim
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("confirmed");
+    });
+
+    expect(mockClaimStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets to idle after successful claim delay", async () => {
+    const mockResult = createMockClaimResult();
+    const mockHistory = createMockHistory();
+    
+    mockClaimStream.mockResolvedValue({
+      result: mockResult,
+      history: mockHistory,
+    });
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("confirmed");
+    });
+
+    // Advance time by 2 seconds for reset
+    vi.advanceTimersByTime(2000);
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("idle");
+      expect(result.current.claimState.streamId).toBe(null);
+    });
+  });
+
+  it("returns correct claimed amount from API response", async () => {
+    const mockResult = createMockClaimResult(250.5);
+    const mockHistory = createMockHistory();
+    
+    mockClaimStream.mockResolvedValue({
+      result: mockResult,
+      history: mockHistory,
+    });
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("confirmed");
+    });
+
+    // Verify the returned amount matches API response
+    expect(onSuccess).toHaveBeenCalledWith(
+      "123", 
+      expect.objectContaining({ claimedAmount: 250.5 }), 
+      mockHistory
+    );
+  });
+
+  it("clears error state on successful retry", async () => {
+    // First call fails
+    const apiError = new SorobanClaimError("Insufficient balance", "INSUFFICIENT_BALANCE");
+    mockClaimStream.mockRejectedValueOnce(apiError);
+
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    const { result } = renderHook(() => 
+      useClaimStream(onSuccess, onFailure)
+    );
+
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("failed");
+      expect(result.current.claimState.error).toBe("Insufficient balance");
+    });
+
+    // Second call succeeds
+    const mockResult = createMockClaimResult();
+    const mockHistory = createMockHistory();
+    mockClaimStream.mockResolvedValueOnce({
+      result: mockResult,
+      history: mockHistory,
+    });
+
+    // Retry claim
+    result.current.claim({
+      streamId: "123",
+      recipientAddress: "GTEST123456789",
+      amount: 100,
+    });
+
+    await waitFor(() => {
+      expect(result.current.claimState.status).toBe("confirmed");
+      expect(result.current.claimState.error).toBe(null);
+    });
+  });
+});

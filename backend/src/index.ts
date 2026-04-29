@@ -18,13 +18,16 @@ import {
   getGlobalEvents,
   getStreamHistory,
   countStreamEvents,
+  getStreamEventSummary,
 } from "./services/eventHistory";
 import { fetchOpenIssues } from "./services/openIssues";
 import { initIndexer, startIndexer, getCircuitBreakerStatus } from "./services/indexer";
+import { adminAuth } from "./middleware/adminAuth";
+import { deleteStreamById } from "./services/streamStore";
 
 import { startReconciliationJob } from "./services/reconciliationJob";
 import { startWebhookWorker } from "./services/webhookWorker";
-import { getDeadLetters, countDeadLetters } from "./services/webhook";
+import { getDeadLetters, countDeadLetters, requeueDeadLetter } from "./services/webhook";
 import {
   archiveOldStreams,
   calculateProgress,
@@ -187,9 +190,6 @@ app.get("/api/assets", (_req: Request, res: Response) => {
   res.json({
     data: ALLOWED_ASSETS,
   });
-});
-
-
 });
 
 app.get("/api/streams", (req: Request, res: Response) => {
@@ -495,7 +495,9 @@ app.get("/api/auth/challenge", authChallengeLimiter, (req: Request, res: Respons
     const challengeTransaction = generateChallenge(accountId.trim());
     res.json({ transaction: challengeTransaction });
   } catch (error: any) {
-
+    const normalizedError = normalizeUnknownApiError(error, "Failed to generate challenge.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
     });
   }
 });
@@ -513,7 +515,9 @@ app.post("/api/auth/token", async (req: Request, res: Response) => {
     const token = await verifyChallengeAndIssueToken(transaction);
     res.json({ token });
   } catch (error: any) {
-
+    const normalizedError = normalizeUnknownApiError(error, "Failed to verify challenge.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
     });
   }
 });
@@ -574,7 +578,13 @@ app.post(
     }
 
     try {
-
+      const updated = await cancelStream(parsedId.value);
+      res.json({
+        data: {
+          ...updated,
+          progress: calculateProgress(updated),
+        },
+      });
     } catch (error: any) {
       console.error("Failed to cancel stream:", error);
       const normalizedError = normalizeUnknownApiError(error, "Failed to cancel stream.");
@@ -745,7 +755,8 @@ app.patch(
     }
 
     const user = (req as any).user;
-
+    if (existingStream.sender !== user.accountId) {
+      sendApiError(req, res, 403, "Only the sender can update the start time.", {
         code: "FORBIDDEN",
       });
       return;
@@ -757,7 +768,11 @@ app.patch(
       return;
     }
 
-
+    try {
+      const updated = updateStreamStartAt(parsedId.value, parsedBody.data.startAt);
+      res.json({ data: { ...updated, progress: calculateProgress(updated) } });
+    } catch (error: any) {
+      const normalizedError = normalizeUnknownApiError(error, "Failed to update start time.");
       sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
         code: normalizedError.code ?? "INTERNAL_ERROR",
       });
@@ -881,6 +896,42 @@ app.get("/api/webhooks/dead-letters", authMiddleware, (req: Request, res: Respon
   }
 });
 
+app.get("/api/webhooks/dead-letters/count", authMiddleware, (req: Request, res: Response) => {
+  try {
+    const total = countDeadLetters();
+    res.json({ total });
+  } catch (error: any) {
+    console.error("Failed to count dead-letter webhooks:", error);
+    const normalizedError = normalizeUnknownApiError(error, "Failed to count dead-letter webhooks.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
+    });
+  }
+});
+
+app.post("/api/webhooks/dead-letters/:id/requeue", authMiddleware, (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    sendApiError(req, res, 400, "Invalid ID format", { code: "VALIDATION_ERROR" });
+    return;
+  }
+
+  try {
+    const success = requeueDeadLetter(id);
+    if (!success) {
+      sendApiError(req, res, 404, "Dead letter not found", { code: "NOT_FOUND" });
+      return;
+    }
+    res.json({ success: true, message: "Webhook re-queued successfully" });
+  } catch (error: any) {
+    console.error("Failed to re-queue dead-letter webhook:", error);
+    const normalizedError = normalizeUnknownApiError(error, "Failed to re-queue dead-letter webhook.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
+    });
+  }
+});
+
 async function startServer() {
   const config = validateEnv();
 
@@ -906,3 +957,28 @@ async function startServer() {
 if (require.main === module) {
   startServer().catch(console.error);
 }
+
+app.delete("/api/streams/:id", adminAuth, (req: Request, res: Response) => {
+  const parsedId = parseStreamId(req.params.id);
+  if (!parsedId.ok) {
+    sendValidationError(req, res, parsedId.issues);
+    return;
+  }
+
+  try {
+    const deleted = deleteStreamById(parsedId.value);
+
+    if (!deleted) {
+      sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
+      return;
+    }
+
+    res.status(204).send();
+  } catch (error: any) {
+    console.error("Failed to delete stream:", error);
+    const normalizedError = normalizeUnknownApiError(error, "Failed to delete stream.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
+    });
+  }
+});

@@ -62,7 +62,7 @@ export interface ValidatedConfig {
   dbPath: string;
   webhookDestinationUrl: string | null;
   webhookSigningSecret: string | null;
-  jwtSecret: string;
+  jwtSecret: string | undefined;
   serverSigningKey: string | null;
   domain: string;
 
@@ -147,6 +147,11 @@ export function validateEnv(): ValidatedConfig {
 
     console.log("✅ Soroban configuration validated");
   } else {
+    if (env.SERVER_PRIVATE_KEY) {
+      console.warn(
+        "⚠️  SOROBAN_DISABLED=true is set and SERVER_PRIVATE_KEY is configured. The private key will not be used or logged in disabled mode."
+      );
+    }
     console.log("⚠️  Soroban disabled (SOROBAN_DISABLED=true) — local development mode");
   }
 

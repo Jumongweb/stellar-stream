@@ -40,6 +40,78 @@ Contract (`contracts`)
 - Supports `create_stream`, `claimable`, `claim`, and `cancel`
 - Not yet integrated with backend runtime in this MVP
 
+See also: [Event Flow](#event-flow) for detailed sequence diagrams of the contract-to-frontend pipeline and webhook delivery system.
+
+## Event Flow
+
+### On-Chain Event Pipeline
+
+The following sequence diagram shows how events flow from the Soroban contract through the indexing pipeline to the frontend:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Contract as Soroban Contract
+    participant Indexer as Indexer Worker
+    participant SQLite as SQLite Database
+    participant API as Backend API
+    participant Frontend as React Frontend
+
+    User->>Contract: create_stream()
+    Contract->>Contract: Transfer tokens (escrow)
+    Contract->>Contract: Store stream state
+    Contract-->>Stellar: Publish StreamCreated/Claimed/Canceled events
+    loop Poll every 10s
+        Indexer->>Stellar RPC: Fetch new events
+        Stellar RPC-->>Indexer: Stream events (Created, Claimed, Canceled)
+        Indexer->>SQLite: Write stream + event(s)
+    end
+    Frontend->>API: GET /api/streams
+    API->>SQLite: Query streams
+    SQLite-->>API: Return stream data
+    API-->>Frontend: JSON response
+    Frontend->>Frontend: Render timeline
+    Frontend->>API: GET /api/streams/:id/history
+    API->>SQLite: Query stream_events
+    SQLite-->>API: Event history
+    API-->>Frontend: Event timeline JSON
+```
+
+### Webhook Delivery Pipeline
+
+Events from the stream lifecycle are also delivered via HTTP webhooks with retry and dead-letter handling:
+
+```mermaid
+sequenceDiagram
+    participant Stream as Stream Event
+    participant Worker as Webhook Worker
+    participant HTTP as HTTP Delivery
+    participant Target as Webhook Target
+    participant DLQ as Dead Letter Queue (webhook_dead_letters)
+
+    Stream->>Worker: Event detected (created/claimed/canceled)
+    Worker->>SQLite: Queue webhook delivery (status='pending')
+    loop Retry with fixed delays [5s, 15s, 60s, 300s, 900s]
+        Worker->>HTTP: POST payload (application/json)
+        HTTP->>Target: Deliver webhook
+        Note right of HTTP: Header: X-Webhook-Signature: sha256=<hmac>
+        Target-->>HTTP: 200 OK (success)
+        HTTP-->>Worker: Success
+        Worker->>SQLite: Update status='success'
+        alt Failure (timeout/error/5xx)
+            Target-->>HTTP: Error
+            HTTP-->>Worker: Failure
+            Worker->>SQLite: Schedule retry (next_retry_at)
+        end
+        SQLite->>Worker: next_retry_at
+    end
+    alt Max retries exceeded
+        Worker->>DLQ: INSERT into webhook_dead_letters
+        Worker->>SQLite: DELETE from webhook_deliveries
+        Worker->>Logs: Error logged
+    end
+```
+
 ## 3) Stream Math Model
 
 For each stream:
@@ -72,6 +144,12 @@ Purpose:
 
 Response:
 - `service`, `status`, `timestamp`
+
+**Docker Compose Health Check Configuration:**
+- **Interval:** 30s
+- **Timeout:** 10s
+- **Retries:** 3
+- **Start Period:** 10s
 
 ### `GET /api/streams`
 Purpose:

@@ -189,6 +189,19 @@ describe("validateEnv", () => {
     });
   });
 
+  function assertNoConsoleOutputContains(hiddenValue: string) {
+    const allCalls = [
+      ...consoleLogSpy.mock.calls,
+      ...consoleWarnSpy.mock.calls,
+      ...consoleErrorSpy.mock.calls,
+    ];
+
+    for (const args of allCalls) {
+      const output = args.join(" ");
+      expect(output).not.toContain(hiddenValue);
+    }
+  }
+
   describe("Acceptance Criteria 3: Local non-chain development can run intentionally", () => {
     it("should allow local development with SOROBAN_DISABLED=true", () => {
       process.env = {
@@ -216,6 +229,26 @@ describe("validateEnv", () => {
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("⚠️  Soroban disabled")
       );
+    });
+
+    it("should warn and not expose the private key when SOROBAN_DISABLED=true and SERVER_PRIVATE_KEY is configured", () => {
+      const privateKey =
+        "SBZVMB74Z76QZ3ZZZ3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3Z3";
+      process.env = {
+        SOROBAN_DISABLED: "true",
+        SERVER_PRIVATE_KEY: privateKey,
+      };
+
+      const config = validateEnv();
+
+      expect(config.sorobanEnabled).toBe(false);
+      expect(config.serverPrivateKey).toBeNull();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "SOROBAN_DISABLED=true is set and SERVER_PRIVATE_KEY is configured"
+        )
+      );
+      assertNoConsoleOutputContains(privateKey);
     });
 
     it("should not require CONTRACT_ID/SERVER_PRIVATE_KEY when SOROBAN_DISABLED=true", () => {

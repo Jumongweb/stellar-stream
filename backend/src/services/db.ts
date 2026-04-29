@@ -67,6 +67,7 @@ function migrate(): void {
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       stream_id       TEXT NOT NULL,
       event_type      TEXT NOT NULL,
+      ledger_sequence INTEGER,
       timestamp       INTEGER NOT NULL,
       actor           TEXT,
       amount          REAL,
@@ -76,6 +77,10 @@ function migrate(): void {
 
     CREATE INDEX IF NOT EXISTS idx_stream_events_stream_id ON stream_events(stream_id);
     CREATE INDEX IF NOT EXISTS idx_stream_events_timestamp ON stream_events(timestamp);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stream_events_dedup
+      ON stream_events(stream_id, event_type, ledger_sequence)
+      WHERE ledger_sequence IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS webhook_deliveries (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +102,8 @@ function migrate(): void {
 
     CREATE TABLE IF NOT EXISTS webhook_dead_letters (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      stream_id       TEXT NOT NULL,
+      event           TEXT NOT NULL,
       url             TEXT NOT NULL,
       payload         TEXT NOT NULL,
       last_error      TEXT,
@@ -123,4 +130,6 @@ function migrate(): void {
   addColumnIfMissing("streams", "paused_duration", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing("stream_archive", "paused_at", "INTEGER");
   addColumnIfMissing("stream_archive", "paused_duration", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("webhook_dead_letters", "stream_id", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing("webhook_dead_letters", "event", "TEXT NOT NULL DEFAULT ''");
 }

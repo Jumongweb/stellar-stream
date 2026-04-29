@@ -78,6 +78,9 @@
                 {
                   "u64": 1000
                 },
+                {
+                  "u64": 0
+                },
                 "void"
               ]
             }
@@ -280,6 +283,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "cliff_seconds"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "end_time"
                       },
                       "val": {
@@ -304,6 +315,22 @@
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_duration"
+                      },
+                      "val": {
+                        "u64": 0
                       }
                     },
                     {
@@ -988,6 +1015,9 @@
                 {
                   "u64": 1000
                 },
+                {
+                  "u64": 0
+                },
                 "void"
               ]
             }
@@ -1204,6 +1234,14 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "cliff_seconds"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
                 {
                   "key": {
                     "symbol": "end_time"

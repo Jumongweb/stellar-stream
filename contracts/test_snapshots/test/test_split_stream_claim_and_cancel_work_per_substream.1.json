@@ -501,6 +501,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "cliff_seconds"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "end_time"
                       },
                       "val": {
@@ -525,6 +533,22 @@
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_duration"
+                      },
+                      "val": {
+                        "u64": 0
                       }
                     },
                     {
@@ -637,6 +661,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "cliff_seconds"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "end_time"
                       },
                       "val": {
@@ -661,6 +693,22 @@
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "paused_duration"
+                      },
+                      "val": {
+                        "u64": 0
                       }
                     },
                     {
@@ -1728,6 +1776,14 @@
               "map": [
                 {
                   "key": {
+                    "symbol": "cliff_seconds"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "end_time"
                   },
                   "val": {
@@ -1870,6 +1926,14 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "cliff_seconds"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
                 {
                   "key": {
                     "symbol": "end_time"

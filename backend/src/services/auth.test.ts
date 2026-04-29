@@ -13,7 +13,7 @@ const serverKeypair = Keypair.random();
 vi.stubEnv("SERVER_SIGNING_KEY", serverKeypair.secret());
 
 // Import after env stubs are in place
-const { verifyChallengeAndIssueToken } = await import("./auth");
+const { verifyChallengeAndIssueToken, authMiddleware } = await import("./auth");
 
 function buildSignedChallenge(clientKeypair: Keypair): string {
   const challenge = WebAuth.buildChallengeTx(
@@ -180,6 +180,100 @@ describe("verifyChallengeAndIssueToken", () => {
       await expect(verifyChallengeAndIssueToken("not-a-valid-tx")).rejects.toThrow(
         "Challenge verification failed",
       );
+    });
+  });
+});
+
+describe("authMiddleware", () => {
+  let req: any;
+  let res: any;
+  let next: any;
+
+  beforeEach(() => {
+    req = {
+      headers: {},
+      requestId: "test-request-id",
+    };
+    res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    next = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("calls next() and attaches user to context with valid JWT", () => {
+    const payload = { accountId: "GTEST123" };
+    const token = jwt.sign(payload, TEST_JWT_SECRET, { expiresIn: "1h" });
+    req.headers.authorization = `Bearer ${token}`;
+
+    authMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.user.accountId).toBe(payload.accountId);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 with token_expired error code for expired JWT", () => {
+    const payload = { accountId: "GTEST123" };
+    const token = jwt.sign(payload, TEST_JWT_SECRET, { expiresIn: "-1h" }); // Expired
+    req.headers.authorization = `Bearer ${token}`;
+
+    authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Authorization token has expired.",
+      statusCode: 401,
+      requestId: "test-request-id",
+      code: "token_expired",
+    });
+  });
+
+  it("returns 401 with unauthorized error code for no Authorization header", () => {
+    authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Missing or invalid authorization header.",
+      statusCode: 401,
+      requestId: "test-request-id",
+      code: "unauthorized",
+    });
+  });
+
+  it("returns 401 with invalid_token error code for malformed token", () => {
+    req.headers.authorization = "Bearer invalid.jwt.token";
+
+    authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Invalid authorization token.",
+      statusCode: 401,
+      requestId: "test-request-id",
+      code: "invalid_token",
+    });
+  });
+
+  it("returns 401 with unauthorized error code for invalid Authorization header format", () => {
+    req.headers.authorization = "InvalidFormat";
+
+    authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Missing or invalid authorization header.",
+      statusCode: 401,
+      requestId: "test-request-id",
+      code: "unauthorized",
     });
   });
 });
