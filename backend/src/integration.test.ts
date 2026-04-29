@@ -164,6 +164,153 @@ describe("Backend Integration Tests", () => {
         expect(response.body.data).toHaveLength(2);
       });
 
+      describe("pagination and filter combinations", () => {
+        const senderA = "G" + "A".repeat(55);
+        const senderB = "G" + "B".repeat(55);
+        const recipientC = "G" + "C".repeat(55);
+        const recipientD = "G" + "D".repeat(55);
+
+        function seedStreams() {
+          const db = getDb();
+          db.exec("DELETE FROM streams");
+
+          const now = Math.floor(Date.now() / 1000);
+          const insert = db.prepare(`
+            INSERT INTO streams (id, sender, recipient, asset_code, total_amount, duration_seconds, start_at, created_at, canceled_at, completed_at)
+            VALUES (@id, @sender, @recipient, @assetCode, @totalAmount, @durationSeconds, @startAt, @createdAt, @canceledAt, @completedAt)
+          `);
+
+          for (let i = 1; i <= 25; i += 1) {
+            let startAt = now - 5000;
+            let durationSeconds = 10000;
+            let canceledAt: number | null = null;
+            let completedAt: number | null = null;
+
+            if (i <= 10) {
+              startAt = now - 5000; // active
+              durationSeconds = 10000;
+            } else if (i <= 15) {
+              startAt = now + 5000; // scheduled
+              durationSeconds = 10000;
+            } else if (i <= 20) {
+              startAt = now - 20000; // completed
+              durationSeconds = 1000;
+              completedAt = now - 100;
+            } else {
+              startAt = now - 5000; // canceled
+              durationSeconds = 10000;
+              canceledAt = now - 100;
+            }
+
+            insert.run({
+              id: i.toString(),
+              sender: i % 2 === 0 ? senderA : senderB,
+              recipient: i % 3 === 0 ? recipientD : recipientC,
+              assetCode: i % 5 === 0 ? "uSdC" : "XLM",
+              totalAmount: 1000 + i,
+              durationSeconds,
+              startAt,
+              createdAt: now - i,
+              canceledAt,
+              completedAt,
+            });
+          }
+        }
+
+        it("should include pagination metadata for multi-page results", async () => {
+          seedStreams();
+
+          const pageOne = await request(app)
+            .get("/api/streams")
+            .query({ page: 1, limit: 20 });
+
+          expect(pageOne.status).toBe(200);
+          expect(pageOne.body.total).toBe(25);
+          expect(pageOne.body.page).toBe(1);
+          expect(pageOne.body.limit).toBe(20);
+          expect(pageOne.body.data).toHaveLength(20);
+
+          const pageTwo = await request(app)
+            .get("/api/streams")
+            .query({ page: 2, limit: 20 });
+
+          expect(pageTwo.status).toBe(200);
+          expect(pageTwo.body.total).toBe(25);
+          expect(pageTwo.body.page).toBe(2);
+          expect(pageTwo.body.limit).toBe(20);
+          expect(pageTwo.body.data).toHaveLength(5);
+        });
+
+        it("should apply q filtering across id, sender, recipient, and asset", async () => {
+          seedStreams();
+
+          const byId = await request(app)
+            .get("/api/streams")
+            .query({ q: "19" });
+
+          expect(byId.status).toBe(200);
+          expect(byId.body.data.map((stream: any) => stream.id)).toContain("19");
+
+          const bySender = await request(app)
+            .get("/api/streams")
+            .query({ q: "bbb" });
+
+          expect(bySender.status).toBe(200);
+          expect(bySender.body.data.every((stream: any) => stream.sender === senderB)).toBe(
+            true,
+          );
+
+          const byRecipient = await request(app)
+            .get("/api/streams")
+            .query({ q: "ddd" });
+
+          expect(byRecipient.status).toBe(200);
+          expect(
+            byRecipient.body.data.every((stream: any) => stream.recipient === recipientD),
+          ).toBe(true);
+
+          const byAsset = await request(app)
+            .get("/api/streams")
+            .query({ q: "sDc" });
+
+          expect(byAsset.status).toBe(200);
+          expect(
+            byAsset.body.data.every(
+              (stream: any) => stream.assetCode.toLowerCase() === "usdc",
+            ),
+          ).toBe(true);
+        });
+
+        it("should combine status and q filters", async () => {
+          seedStreams();
+
+          const response = await request(app)
+            .get("/api/streams")
+            .query({
+              status: "active",
+              sender: senderB,
+              recipient: recipientD,
+              asset: "XLM",
+              q: "3",
+            });
+
+          expect(response.status).toBe(200);
+          expect(response.body.data.map((stream: any) => stream.id)).toEqual(["3"]);
+        });
+
+        it("should return all matching rows when pagination params are omitted", async () => {
+          seedStreams();
+
+          const response = await request(app)
+            .get("/api/streams")
+            .query({ status: "active" });
+
+          expect(response.status).toBe(200);
+          expect(response.body.total).toBe(10);
+          expect(response.body.data).toHaveLength(10);
+        });
+      });
+
       it("should return 400 for invalid status", async () => {
         const response = await request(app)
           .get("/api/streams")
