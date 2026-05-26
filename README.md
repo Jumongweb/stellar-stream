@@ -11,7 +11,9 @@ It includes:
 This repository is intentionally lightweight and easy to extend.
 
 For common questions and troubleshooting, see our [FAQ.md](FAQ.md).  
-For production setup and operations, see [DEPLOYMENT.md](DEPLOYMENT.md) and [RUNBOOK.md](RUNBOOK.md).
+For production setup and operations, see [DEPLOYMENT.md](DEPLOYMENT.md) and [RUNBOOK.md](RUNBOOK.md).  
+For security policy and reporting vulnerabilities, see [SECURITY.md](SECURITY.md).  
+We are committed to a welcoming environment; see our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## 1) What The Project Does
 
