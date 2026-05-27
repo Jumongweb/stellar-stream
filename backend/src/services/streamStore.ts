@@ -15,6 +15,7 @@ import { initDb, getDb } from "./db";
 import { recordEventWithDb } from "./eventHistory";
 import { streamHasEvent } from "./eventHistory";
 import { triggerWebhook } from "./webhook";
+import { initCache, getCache } from "./cache";
 
 export type StreamStatus = "scheduled" | "active" | "paused" | "completed" | "canceled";
 
@@ -136,8 +137,15 @@ function listLocalStreamIds(): Set<string> {
 let rpcServer: rpc.Server | null = null;
 let serverKeypair: Keypair | null = null;
 
+/**
+ * Initializes Soroban RPC connection and database.
+ * Must be called before any stream operations.
+ * Reads RPC_URL and SERVER_PRIVATE_KEY from environment variables.
+ * @throws {Error} If database initialization fails
+ */
 export async function initSoroban() {
   initDb();
+  initCache();
 
   const rpcUrl =
     process.env.RPC_URL || "https://soroban-testnet.stellar.org:443";
@@ -165,34 +173,19 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
-const rpcCache = new Map<string, CacheEntry<any>>();
-
-function getCached<T>(key: string): T | null {
-  const entry = rpcCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    rpcCache.delete(key);
-    return null;
-  }
-  return entry.data;
+async function getCached<T>(key: string): Promise<T | null> {
+  return getCache().get<T>(key);
 }
 
-function setCached<T>(key: string, data: T, ttlSeconds = 5): void {
-  rpcCache.set(key, {
-    data,
-    expiresAt: Date.now() + ttlSeconds * 1000,
-  });
+async function setCached<T>(key: string, data: T, ttlSeconds = 5): Promise<void> {
+  return getCache().set<T>(key, data, ttlSeconds);
 }
 
-function invalidateCache(pattern?: string): void {
+async function invalidateCache(pattern?: string): Promise<void> {
   if (!pattern) {
-    rpcCache.clear();
+    await getCache().clear();
   } else {
-    for (const key of rpcCache.keys()) {
-      if (key.includes(pattern)) {
-        rpcCache.delete(key);
-      }
-    }
+    await getCache().del(pattern);
   }
 }
 
@@ -294,7 +287,7 @@ async function fetchOnChainStreamRecord(
   id: number,
 ): Promise<StreamRecord | null> {
   const cacheKey = `stream:${id}`;
-  const cached = getCached<StreamRecord>(cacheKey);
+  const cached = await getCached<StreamRecord>(cacheKey);
   if (cached) {
     return cached;
   }
@@ -326,7 +319,7 @@ async function fetchOnChainStreamRecord(
     pausedDuration: Number(streamData.paused_duration ?? 0),
   };
 
-  setCached(cacheKey, result, 5);
+  await setCached(cacheKey, result, 5);
   return result;
 }
 
@@ -376,6 +369,13 @@ function computeStatus(stream: StreamRecord, at: number): StreamStatus {
   return "active";
 }
 
+/**
+ * Calculates the current progress of a stream.
+ * Accounts for paused duration and cancellation state.
+ * @param {StreamRecord} stream - The stream to calculate progress for
+ * @param {number} [at=nowInSeconds()] - Unix timestamp to calculate progress at (defaults to current time)
+ * @returns {StreamProgress} Progress metrics including status, vested amount, and percentage complete
+ */
 export function calculateProgress(
   stream: StreamRecord,
   at = nowInSeconds(),
@@ -415,6 +415,13 @@ export function calculateProgress(
   };
 }
 
+/**
+ * Syncs all on-chain streams from Soroban contract to local SQLite database.
+ * Fetches streams in parallel (max 5 concurrent RPC calls) with fallback to sequential.
+ * Updates existing streams and inserts new ones.
+ * @async
+ * @returns {Promise<void>}
+ */
 export async function syncStreams() {
   const sorobanContext = getSorobanContext();
   if (!sorobanContext) return;
@@ -484,6 +491,13 @@ export async function syncStreams() {
   }
 }
 
+/**
+ * Reconciles missing streams by comparing local database with on-chain state.
+ * Backfills any streams that exist on-chain but not locally.
+ * Records "created" events for backfilled streams.
+ * @async
+ * @returns {Promise<number>} Number of streams repaired
+ */
 export async function reconcileMissingStreams(): Promise<number> {
   const sorobanContext = getSorobanContext();
   if (!sorobanContext) {
@@ -557,6 +571,15 @@ export async function reconcileMissingStreams(): Promise<number> {
   }
 }
 
+/**
+ * Creates a new stream on-chain and persists it locally.
+ * Sends transaction to Soroban contract and records "created" event.
+ * Triggers webhook notification after successful persistence.
+ * @async
+ * @param {StreamInput} input - Stream creation parameters (sender, recipient, amount, duration, etc.)
+ * @returns {Promise<StreamRecord>} The created stream record
+ * @throws {Error} If Soroban is not configured or transaction fails
+ */
 export async function createStream(input: StreamInput): Promise<StreamRecord> {
   const startAt = input.startAt ?? nowInSeconds();
   const contractId = process.env.CONTRACT_ID;
@@ -651,7 +674,7 @@ export async function createStream(input: StreamInput): Promise<StreamRecord> {
   })();
 
   // Invalidate cache to ensure freshness after stream creation
-  invalidateCache("stream:");
+  await invalidateCache("stream:");
 
   // Webhook fires after the transaction commits — a webhook failure
   // must never roll back an already-persisted stream.
@@ -659,104 +682,12 @@ export async function createStream(input: StreamInput): Promise<StreamRecord> {
   return stream;
 }
 
-export async function pauseStream(id: string): Promise<StreamRecord | undefined> {
-  const stream = getStream(id);
-  if (!stream || stream.pausedAt !== undefined || stream.canceledAt !== undefined || stream.completedAt !== undefined) {
-    return stream;
-  }
-
-  const sorobanContext = getSorobanContext();
-  if (sorobanContext && rpcServer && serverKeypair) {
-    const sourceAccount = await rpcServer.getAccount(serverKeypair.publicKey());
-    const tx = sorobanContext.contract.call(
-      "pause_stream",
-      nativeToScVal(parseInt(id), { type: "u64" }),
-    );
-
-    const built = await rpcServer.prepareTransaction(
-      new TransactionBuilder(sourceAccount, {
-        fee: "1000",
-        networkPassphrase: process.env.NETWORK_PASSPHRASE || Networks.TESTNET,
-      })
-        .addOperation(tx)
-        .setTimeout(30)
-        .build(),
-    );
-
-    built.sign(serverKeypair);
-    const sendRes = await retryWithBackoff(() => rpcServer!.sendTransaction(built));
-    if (sendRes.status === "PENDING") {
-      let txResult;
-      let attempts = 0;
-      while (attempts < 10) {
-        txResult = await retryWithBackoff(() => rpcServer!.getTransaction(sendRes.hash));
-        if (txResult.status !== "NOT_FOUND") break;
-        await new Promise((r) => setTimeout(r, 1000));
-        attempts++;
-      }
-    }
-  }
-
-  const now = nowInSeconds();
-  const db = getDb();
-  db.prepare("UPDATE streams SET paused_at = ? WHERE id = ?").run(now, id);
-
-  invalidateCache(`stream:${id}`);
-  return getStream(id);
-}
-
-export async function resumeStream(id: string): Promise<StreamRecord | undefined> {
-  const stream = getStream(id);
-  if (!stream || stream.pausedAt === undefined) {
-    return stream;
-  }
-
-  const sorobanContext = getSorobanContext();
-  if (sorobanContext && rpcServer && serverKeypair) {
-    const sourceAccount = await rpcServer.getAccount(serverKeypair.publicKey());
-    const tx = sorobanContext.contract.call(
-      "resume_stream",
-      nativeToScVal(parseInt(id), { type: "u64" }),
-    );
-
-    const built = await rpcServer.prepareTransaction(
-      new TransactionBuilder(sourceAccount, {
-        fee: "1000",
-        networkPassphrase: process.env.NETWORK_PASSPHRASE || Networks.TESTNET,
-      })
-        .addOperation(tx)
-        .setTimeout(30)
-        .build(),
-    );
-
-    built.sign(serverKeypair);
-    const sendRes = await retryWithBackoff(() => rpcServer!.sendTransaction(built));
-    if (sendRes.status === "PENDING") {
-      let txResult;
-      let attempts = 0;
-      while (attempts < 10) {
-        txResult = await retryWithBackoff(() => rpcServer!.getTransaction(sendRes.hash));
-        if (txResult.status !== "NOT_FOUND") break;
-        await new Promise((r) => setTimeout(r, 1000));
-        attempts++;
-      }
-    }
-  }
-
-  const now = nowInSeconds();
-  const additionalPausedDuration = Math.max(0, now - stream.pausedAt);
-  const newTotalPausedDuration = stream.pausedDuration + additionalPausedDuration;
-
-  const db = getDb();
-  db.prepare("UPDATE streams SET paused_at = NULL, paused_duration = ? WHERE id = ?").run(
-    newTotalPausedDuration,
-    id,
-  );
-
-  invalidateCache(`stream:${id}`);
-  return getStream(id);
-}
-
+/**
+ * Refreshes stream statuses by marking completed streams.
+ * Marks streams as completed when current time exceeds stream end time.
+ * Records "completed" events and triggers webhooks for newly completed streams.
+ * @returns {number} Number of streams marked as completed
+ */
 export function refreshStreamStatuses(): number {
   const db = getDb();
   const now = nowInSeconds();
@@ -792,6 +723,12 @@ export function refreshStreamStatuses(): number {
   return result.changes;
 }
 
+/**
+ * Archives completed streams older than 30 days.
+ * Moves archived streams to stream_archive table and marks them in main table.
+ * @async
+ * @returns {Promise<number>} Number of streams archived
+ */
 export async function archiveOldStreams(): Promise<number> {
   const db = getDb();
   const thirtyDaysAgo = nowInSeconds() - 30 * 24 * 60 * 60;
@@ -856,6 +793,11 @@ export async function archiveOldStreams(): Promise<number> {
   }
 }
 
+/**
+ * Lists all streams from the database.
+ * @param {boolean} [includeArchived=false] - Whether to include archived streams
+ * @returns {StreamRecord[]} Array of stream records sorted by creation date (newest first)
+ */
 export function listStreams(includeArchived = false): StreamRecord[] {
   const db = getDb();
   const query = includeArchived
@@ -865,6 +807,11 @@ export function listStreams(includeArchived = false): StreamRecord[] {
   return rows.map(rowToRecord);
 }
 
+/**
+ * Lists all streams where the given address is the recipient.
+ * @param {string} recipientAddress - Stellar account address to filter by
+ * @returns {StreamRecord[]} Array of stream records sorted by creation date (newest first)
+ */
 export function listStreamsByRecipient(recipientAddress: string): StreamRecord[] {
   const db = getDb();
   const rows = db
@@ -873,6 +820,11 @@ export function listStreamsByRecipient(recipientAddress: string): StreamRecord[]
   return rows.map(rowToRecord);
 }
 
+/**
+ * Lists all streams where the given address is the sender.
+ * @param {string} senderAddress - Stellar account address to filter by
+ * @returns {StreamRecord[]} Array of stream records sorted by creation date (newest first)
+ */
 export function listStreamsBySender(senderAddress: string): StreamRecord[] {
   const db = getDb();
   const rows = db
@@ -881,6 +833,11 @@ export function listStreamsBySender(senderAddress: string): StreamRecord[] {
   return rows.map(rowToRecord);
 }
 
+/**
+ * Retrieves a single stream by ID.
+ * @param {string} id - Stream ID
+ * @returns {StreamRecord | undefined} The stream record, or undefined if not found
+ */
 export function getStream(id: string): StreamRecord | undefined {
   const db = getDb();
   const row = db.prepare("SELECT * FROM streams WHERE id = ?").get(id) as
@@ -889,6 +846,14 @@ export function getStream(id: string): StreamRecord | undefined {
   return row ? rowToRecord(row) : undefined;
 }
 
+/**
+ * Cancels a stream and records the cancellation event.
+ * Attempts to retrieve refund amount from on-chain cancel transaction.
+ * Triggers webhook notification after successful cancellation.
+ * @async
+ * @param {string} id - Stream ID to cancel
+ * @returns {Promise<StreamRecord | undefined>} The updated stream record, or undefined if not found
+ */
 export async function cancelStream(
   id: string,
 ): Promise<StreamRecord | undefined> {
@@ -954,7 +919,7 @@ export async function cancelStream(
   }
 
   // Invalidate cache
-  invalidateCache(`stream:${id}`);
+  await invalidateCache(`stream:${id}`);
 
   // Atomically write the updated stream row and the cancellation event.
   const db = getDb();
@@ -968,6 +933,13 @@ export async function cancelStream(
   return stream;
 }
 
+/**
+ * Pauses an active stream.
+ * Only active streams can be paused. Records "paused" event and triggers webhook.
+ * @param {string} id - Stream ID to pause
+ * @returns {StreamRecord} The updated stream record
+ * @throws {Error} If stream not found or not in active state
+ */
 export function pauseStream(id: string): StreamRecord {
   const stream = getStream(id);
   if (!stream) {
@@ -994,6 +966,14 @@ export function pauseStream(id: string): StreamRecord {
   return stream;
 }
 
+/**
+ * Resumes a paused stream.
+ * Extends the stream duration to compensate for pause time so recipient doesn't lose vesting.
+ * Records "resumed" event and triggers webhook.
+ * @param {string} id - Stream ID to resume
+ * @returns {StreamRecord} The updated stream record
+ * @throws {Error} If stream not found or not in paused state
+ */
 export function resumeStream(id: string): StreamRecord {
   const stream = getStream(id);
   if (!stream) {
@@ -1027,6 +1007,15 @@ export function resumeStream(id: string): StreamRecord {
   return stream;
 }
 
+/**
+ * Updates the start time of a scheduled stream.
+ * Only scheduled streams (not yet started) can have their start time updated.
+ * Records "start_time_updated" event.
+ * @param {string} id - Stream ID
+ * @param {number} newStartAt - New start time (Unix timestamp in seconds)
+ * @returns {StreamRecord} The updated stream record
+ * @throws {Error} If stream not found or not in scheduled state
+ */
 export function updateStreamStartAt(id: string,
   newStartAt: number,
 ): StreamRecord {
@@ -1070,6 +1059,12 @@ export function updateStreamStartAt(id: string,
 }
 
 
+/**
+ * Deletes a stream and all associated events from the database.
+ * This is a hard delete and cannot be undone.
+ * @param {string} id - Stream ID to delete
+ * @returns {boolean} True if stream was deleted, false if not found
+ */
 export function deleteStreamById(id: string): boolean {
   const db = getDb();
 
