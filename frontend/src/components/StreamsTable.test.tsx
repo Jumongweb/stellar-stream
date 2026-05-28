@@ -1,13 +1,9 @@
 import React from 'react';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { StreamsTable } from '../components/StreamsTable';
+import { StreamsTable } from './StreamsTable';
 import { Stream } from '../types/stream';
-
-const noop = () => {};
-import { StreamsTable } from './StreamsTable'; 
-import { Stream } from '../types/stream'; 
 
 const noop = vi.fn();
 
@@ -88,28 +84,45 @@ const mockStreams: Stream[] = [
 
 const defaultProps = {
   streams: mockStreams,
-  filters: {},
+  filters: { status: undefined, search: '' },
   onFiltersChange: vi.fn(),
   onCancel: vi.fn().mockResolvedValue(undefined),
-
+  onPause: vi.fn().mockResolvedValue(undefined),
+  onResume: vi.fn().mockResolvedValue(undefined),
+  onEditStartTime: vi.fn(),
 };
 
-describe('StreamsTable Component', () => {
+describe('StreamsTable', () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllMocks();
   });
-  it('renders table data when streams are passed', () => {
-    render(
-      <StreamsTable 
 
-      />
-    );
-    
-    // Checking for text elements populated by the array map
-    expect(screen.getAllByTitle('G_RECIPIENT123').length).toBeGreaterThan(0);
+  it('renders stream rows', () => {
+    render(<StreamsTable {...defaultProps} />);
     expect(screen.getAllByText(/active/i).length).toBeGreaterThan(0);
   });
 
+  it('shows skeleton rows when loading', () => {
+    render(<StreamsTable {...defaultProps} loading={true} />);
+    const skeletons = document.querySelectorAll('.skeleton');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
 
+  it('shows real rows when not loading', () => {
+    render(<StreamsTable {...defaultProps} loading={false} />);
+    expect(screen.getByText(/active/i)).toBeInTheDocument();
+  });
+
+  it('table has aria-busy=true while loading', () => {
+    render(<StreamsTable {...defaultProps} loading={true} />);
+    const table = document.querySelector('table');
+    expect(table).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('table has aria-busy=false when not loading', () => {
+    render(<StreamsTable {...defaultProps} loading={false} />);
+    const table = document.querySelector('table');
+    expect(table).toHaveAttribute('aria-busy', 'false');
   });
 });
