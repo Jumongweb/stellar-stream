@@ -43,7 +43,69 @@ The seed script creates streams across all statuses (scheduled, active, paused, 
 
 ### Backend Tests
 
-Run `npm run test` in the `backend/` directory.
+All backend tests use [Vitest](https://vitest.dev/) and live alongside source files as `*.test.ts`.
+
+**Run all tests once** (CI mode):
+
+```bash
+cd backend
+npm test -- --run
+```
+
+**Watch mode** (re-runs affected tests on every save — recommended during development):
+
+```bash
+cd backend
+npm test
+```
+
+**Run a single file in watch mode:**
+
+```bash
+cd backend
+npm test -- src/services/streamStore.test.ts
+```
+
+**Coverage report** (requires `@vitest/coverage-v8`, already in devDependencies):
+
+```bash
+cd backend
+npm test -- --run --coverage
+```
+
+Coverage output is written to `backend/coverage/`. Open `coverage/index.html` in a browser for the full line-by-line report.
+
+**Coverage for a specific file:**
+
+```bash
+cd backend
+npm test -- --run --coverage --coverage.include='src/services/streamStore.ts'
+```
+
+### Frontend Tests
+
+Frontend tests also use Vitest with `happy-dom` and React Testing Library.
+
+**Run all tests once:**
+
+```bash
+cd frontend
+npm test -- --run
+```
+
+**Watch mode:**
+
+```bash
+cd frontend
+npm test
+```
+
+**Coverage report:**
+
+```bash
+cd frontend
+npm test -- --run --coverage
+```
 
 ### Contract Tests
 
